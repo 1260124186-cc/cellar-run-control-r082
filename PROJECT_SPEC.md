@@ -24,14 +24,20 @@ deferred to a later engineering task.
 
 ### Formula
 
-A formula contains an identifier, normalized name, style label, target original
-gravity, target final gravity, maximum fermentation temperature, minimum and
-maximum planned days, ordered process steps, lifecycle state, version, and
-timestamps.
+A formula is one revision of a named formula. It contains an identifier, its
+formula family identifier, a revision number within that family, an optional
+source revision identifier and source revision number, normalized name, style
+label, target original gravity, target final gravity, maximum fermentation
+temperature, minimum and maximum planned days, ordered process steps,
+lifecycle state, aggregate version, and timestamps.
+
+A formula family owns the unique normalized name and tracks the current
+runnable revision (`current_formula_id`), at most one open draft revision
+(`draft_formula_id`), and the next revision number.
 
 States are `draft`, `approved`, and `retired`.
 
-- Names are unique after case folding and whitespace normalization.
+- Names are unique per family after case folding and whitespace normalization.
 - Target original gravity is in the inclusive range 1.030 to 1.120.
 - Target final gravity is positive, lower than target original gravity, and
   differs from it by at least 0.005.
@@ -42,8 +48,30 @@ States are `draft`, `approved`, and `retired`.
 - Step temperatures are in the inclusive range 5 to 90 Celsius.
 - Step hold times are 1 to 1440 minutes.
 - `draft -> approved` requires a complete valid step list.
-- An approved formula is immutable.
+- An approved formula is immutable: its content and steps can never change.
 - `approved -> retired` is allowed only when no run currently uses it.
+
+### Controlled Formula Revision
+
+- Creating a formula creates a family and its revision 1 draft.
+- A controlled revision is started with
+  `POST /v1/formulas/{id}/revisions` only from the family's *current*
+  approved revision. The request may omit the body (full inheritance) or
+  override style, target gravities, maximum temperature, planned days, or
+  steps; omitted values are inherited from the source. The family name cannot
+  change.
+- The new candidate is a separate draft with its own identifier and aggregate
+  version. It records `revision_of_formula_id` and
+  `source_revision_number`. While it is pending it never replaces the current
+  version: new runs keep adopting the old revision, and runs cannot attach to
+  drafts.
+- At most one draft revision may be open per family.
+- Approving the candidate publishes it as the family current atomically. The
+  previous current revision is marked with `superseded_at` but stays approved,
+  readable, and immutable; it cannot be revised, edited, or used for new runs.
+- Repeated approval, revision from a non-approved or non-current source, a
+  stale `X-Expected-Version`, an invalid override, or a name change is rejected
+  before any state changes; a rejected request never leaves a partial draft.
 
 ### Vessel
 
@@ -63,15 +91,21 @@ States are `available`, `reserved`, `in_use`, `cleaning`, and `retired`.
 
 ### FermentationRun
 
-A run contains an identifier, unique run code, an approved formula identifier,
-an optional vessel identifier, planned volume, notes, lifecycle state,
-timetable, ordered observations, final metrics, version, and timestamps.
+A run contains an identifier, unique run code, the exact approved formula
+revision identifier it adopted plus a snapshot of that revision's family
+identifier, revision number, and name, an optional vessel identifier, planned
+volume, notes, lifecycle state, timetable, ordered observations, final
+metrics, version, and timestamps.
 
 States are `planned`, `reserved`, `fermenting`, `conditioning`, `completed`,
 and `aborted`.
 
 - Planned volume is greater than zero and cannot exceed vessel capacity.
-- Only an approved formula may be attached to a run.
+- Only a family's current approved formula revision may be attached to a run;
+  drafts, superseded revisions, and retired revisions are rejected.
+- The adopted revision snapshot is fixed at run creation, so run details stay
+  traceable to the actual formula version even after newer revisions are
+  published.
 - `planned -> reserved` atomically reserves an available vessel.
 - `reserved -> fermenting` requires that the vessel still belongs to the run.
 - `fermenting -> conditioning` requires at least two observations.
@@ -105,15 +139,22 @@ Public entry points are:
 
 - `POST /v1/formulas`
 - `PUT /v1/formulas/{id}/steps`
+- `POST /v1/formulas/{id}/revisions`
 - `POST /v1/formulas/{id}/approve`
 - `GET /v1/formulas/{id}`
+- `GET /v1/formulas`
 
 The client creates a draft, sets its process step list atomically, approves it,
 and reads the approved record. Invalid ranges, duplicate names, empty steps,
 and repeated approval return stable error codes without partial writes.
 
+A production revision starts from the approved record, inherits or overrides
+its content while remaining a draft, and only replaces the runnable version on
+approval. Old revisions remain queryable and immutable; runs remember the
+revision they adopted.
+
 This path crosses HTTP protocol handling, application orchestration, domain
-rules, and snapshot storage.
+rules, lineage storage, and snapshot storage.
 
 ### 2. Vessel Run Lifecycle
 
@@ -189,6 +230,11 @@ updated aggregate and its version. A failed write returns:
 Write requests may include `X-Expected-Version`. When present, the service
 rejects a stale write instead of overwriting newer state.
 
+Revision error codes are `invalid_formula_revision` (source is not a legal
+approved revision), `formula_version_stale` (the revision is no longer the
+current runnable version), and `formula_revision_open` (a draft revision is
+already open for the family). They map to HTTP 409.
+
 `GET /healthz` returns process health and the current snapshot revision.
 
 ## Persistence And Concurrency
@@ -197,6 +243,12 @@ The configured data directory contains `state.json`. Writes are serialized by
 an in-process mutex. The complete state is encoded, committed to durable
 storage, and then atomically renamed over the target. An update is not
 published in memory unless persistence succeeds.
+
+The snapshot stores formula families alongside their revisions. Snapshots
+written before families existed are migrated on startup: each standalone
+formula becomes revision 1 of its own family, and the name index is rebuilt.
+Lineage, index, and revision-number inconsistencies stop the process before
+HTTP serving begins.
 
 Reads use copied values and never expose repository-owned maps or slices. The
 default address is `127.0.0.1:8088`, the request body limit is 1 MiB, and all
@@ -215,6 +267,7 @@ start the real HTTP handler, issue real JSON requests, check success and failure
 behavior, and exit without external services:
 
 - `go run ./cmd/fermentctl check formula-approval`
+- `go run ./cmd/fermentctl check formula-revision`
 - `go run ./cmd/fermentctl check vessel-run-lifecycle`
 - `go run ./cmd/fermentctl check observations-completion`
 

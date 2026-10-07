@@ -1,6 +1,9 @@
 package httpapi
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/domain"
@@ -19,6 +22,17 @@ type createFormulaRequest struct {
 
 type setStepsRequest struct {
 	Steps []domain.FormulaStep `json:"steps"`
+}
+
+type startRevisionRequest struct {
+	Name                  *string               `json:"name"`
+	Style                 *string               `json:"style"`
+	TargetOriginalGravity *float64              `json:"target_original_gravity"`
+	TargetFinalGravity    *float64              `json:"target_final_gravity"`
+	MaxFermentationTempC  *float64              `json:"max_fermentation_temp_c"`
+	MinimumDays           *int                  `json:"minimum_days"`
+	MaximumDays           *int                  `json:"maximum_days"`
+	Steps                 *[]domain.FormulaStep `json:"steps"`
 }
 
 func registerFormulaRoutes(mux *http.ServeMux, app *service.Service) {
@@ -77,6 +91,44 @@ func registerFormulaRoutes(mux *http.ServeMux, app *service.Service) {
 			return
 		}
 		writeJSON(response, http.StatusOK, formula)
+	})
+
+	mux.HandleFunc("POST /v1/formulas/{id}/revisions", func(response http.ResponseWriter, request *http.Request) {
+		var body startRevisionRequest
+		raw, readErr := io.ReadAll(http.MaxBytesReader(response, request.Body, maxRequestBody))
+		if readErr != nil {
+			writeDomainError(response, decodeError(readErr))
+			return
+		}
+		if len(bytes.TrimSpace(raw)) > 0 {
+			decoder := json.NewDecoder(bytes.NewReader(raw))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&body); err != nil {
+				writeDomainError(response, decodeError(err))
+				return
+			}
+		}
+		expected, err := expectedVersion(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		formula, err := app.StartFormulaRevision(request.PathValue("id"),
+			service.StartFormulaRevisionInput{
+				ExpectedVersion:       expected,
+				Name:                  body.Name,
+				Style:                 body.Style,
+				TargetOriginalGravity: body.TargetOriginalGravity,
+				TargetFinalGravity:    body.TargetFinalGravity,
+				MaxFermentationTempC:  body.MaxFermentationTempC,
+				MinimumDays:           body.MinimumDays,
+				MaximumDays:           body.MaximumDays,
+				Steps:                 body.Steps,
+			})
+		if err != nil {
+			writeDomainError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusCreated, formula)
 	})
 
 	mux.HandleFunc("POST /v1/formulas/{id}/approve", func(response http.ResponseWriter, request *http.Request) {

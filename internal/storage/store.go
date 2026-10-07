@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +61,9 @@ func normalizeSnapshot(value domain.Snapshot) (domain.Snapshot, error) {
 	if value.Revision < 0 {
 		return domain.Snapshot{}, fmt.Errorf("state revision cannot be negative")
 	}
+	if value.FormulaFamilies == nil {
+		value.FormulaFamilies = map[string]domain.FormulaFamily{}
+	}
 	if value.Formulas == nil {
 		value.Formulas = map[string]domain.Formula{}
 	}
@@ -78,26 +82,163 @@ func normalizeSnapshot(value domain.Snapshot) (domain.Snapshot, error) {
 	if value.RunIndex == nil {
 		value.RunIndex = map[string]string{}
 	}
+	if err := migrateFormulaLineage(&value); err != nil {
+		return domain.Snapshot{}, err
+	}
 	if err := validateIndexes(value); err != nil {
 		return domain.Snapshot{}, err
 	}
 	return value, nil
 }
 
-func validateIndexes(value domain.Snapshot) error {
-	expectedNames := make(map[string]string, len(value.Formulas))
+// migrateFormulaLineage upgrades snapshots written before formula families
+// existed: every standalone formula becomes revision 1 of its own family and
+// the name index is rebuilt to point at families. Snapshots that already carry
+// family data are only validated, never rewritten.
+func migrateFormulaLineage(value *domain.Snapshot) error {
+	if len(value.FormulaFamilies) > 0 {
+		return nil
+	}
+	families := make(map[string]domain.FormulaFamily, len(value.Formulas))
+	nameIndex := make(map[string]string, len(value.Formulas))
 	for id, formula := range value.Formulas {
+		familyID := "fam_" + strings.TrimPrefix(id, "formula_")
+		family := domain.FormulaFamily{
+			ID:           familyID,
+			Name:         formula.Name,
+			NextRevision: 2,
+			CreatedAt:    formula.CreatedAt,
+			UpdatedAt:    formula.UpdatedAt,
+		}
+		switch formula.State {
+		case domain.FormulaApproved:
+			if formula.SupersededAt == nil {
+				current := id
+				family.CurrentID = &current
+			}
+		case domain.FormulaDraft:
+			draft := id
+			family.DraftID = &draft
+		}
+		families[familyID] = family
+		formula.FamilyID = familyID
+		if formula.RevisionNumber == 0 {
+			formula.RevisionNumber = 1
+		}
+		value.Formulas[id] = formula
 		key := domain.NameKey(formula.Name)
 		if key == "" {
 			return fmt.Errorf("formula %s has an empty normalized name", id)
+		}
+		if existing, found := nameIndex[key]; found && existing != familyID {
+			return fmt.Errorf("formula name index contains a duplicate key")
+		}
+		nameIndex[key] = familyID
+	}
+	value.FormulaFamilies = families
+	value.NameIndex = nameIndex
+	return nil
+}
+
+func validateIndexes(value domain.Snapshot) error {
+	expectedFamilies := make(map[string]struct{}, len(value.FormulaFamilies))
+	expectedNames := make(map[string]string, len(value.FormulaFamilies))
+	familyMembers := make(map[string][]string)
+	for id, family := range value.FormulaFamilies {
+		expectedFamilies[id] = struct{}{}
+		if family.ID != id {
+			return fmt.Errorf("formula family %s has a mismatched identity", id)
+		}
+		key := domain.NameKey(family.Name)
+		if key == "" {
+			return fmt.Errorf("formula family %s has an empty normalized name", id)
 		}
 		if existing, found := expectedNames[key]; found && existing != id {
 			return fmt.Errorf("formula name index contains a duplicate key")
 		}
 		expectedNames[key] = id
+		if family.CurrentID != nil {
+			if _, ok := value.Formulas[*family.CurrentID]; !ok {
+				return fmt.Errorf("formula family %s points at a missing current revision", id)
+			}
+		}
+		if family.DraftID != nil {
+			if _, ok := value.Formulas[*family.DraftID]; !ok {
+				return fmt.Errorf("formula family %s points at a missing draft revision", id)
+			}
+		}
+		if family.NextRevision < 1 {
+			return fmt.Errorf("formula family %s has an invalid next revision", id)
+		}
 	}
 	if err := compareIndexes("formula name", value.NameIndex, expectedNames); err != nil {
 		return err
+	}
+
+	revisionNumbers := make(map[string]map[int]string, len(value.FormulaFamilies))
+	for id := range value.FormulaFamilies {
+		revisionNumbers[id] = map[int]string{}
+	}
+	for id, formula := range value.Formulas {
+		if formula.FamilyID == "" {
+			return fmt.Errorf("formula %s has no formula family", id)
+		}
+		if _, ok := value.FormulaFamilies[formula.FamilyID]; !ok {
+			return fmt.Errorf("formula %s points at a missing formula family", id)
+		}
+		if formula.RevisionNumber < 1 {
+			return fmt.Errorf("formula %s has an invalid revision number", id)
+		}
+		if existing, found := revisionNumbers[formula.FamilyID][formula.RevisionNumber]; found && existing != id {
+			return fmt.Errorf("formula family %s contains duplicate revision numbers", formula.FamilyID)
+		}
+		revisionNumbers[formula.FamilyID][formula.RevisionNumber] = id
+		if formula.RevisionOfID != nil {
+			source, ok := value.Formulas[*formula.RevisionOfID]
+			if !ok || source.FamilyID != formula.FamilyID {
+				return fmt.Errorf("formula %s has an invalid revision source", id)
+			}
+			if formula.SourceRevisionNumber == nil ||
+				*formula.SourceRevisionNumber != source.RevisionNumber {
+				return fmt.Errorf("formula %s records a mismatched source revision", id)
+			}
+		}
+		familyMembers[formula.FamilyID] = append(familyMembers[formula.FamilyID], id)
+	}
+	for id, family := range value.FormulaFamilies {
+		members := familyMembers[id]
+		if len(members) == 0 {
+			return fmt.Errorf("formula family %s has no revisions", id)
+		}
+		if family.CurrentID != nil {
+			current := value.Formulas[*family.CurrentID]
+			if current.State != domain.FormulaApproved || current.SupersededAt != nil {
+				return fmt.Errorf("formula family %s current revision is not runnable", id)
+			}
+		}
+		if family.DraftID != nil {
+			draft := value.Formulas[*family.DraftID]
+			if draft.State != domain.FormulaDraft {
+				return fmt.Errorf("formula family %s draft marker is stale", id)
+			}
+		}
+		maxRevision := 0
+		hasOpenDraft := false
+		for _, memberID := range members {
+			member := value.Formulas[memberID]
+			if member.RevisionNumber > maxRevision {
+				maxRevision = member.RevisionNumber
+			}
+			if member.State == domain.FormulaDraft {
+				hasOpenDraft = true
+			}
+		}
+		if family.NextRevision != maxRevision+1 {
+			return fmt.Errorf("formula family %s has an inconsistent next revision", id)
+		}
+		if family.HasDraft() != hasOpenDraft {
+			return fmt.Errorf("formula family %s draft marker does not match its revisions", id)
+		}
 	}
 
 	expectedVessels := make(map[string]string, len(value.Vessels))
@@ -117,6 +258,11 @@ func validateIndexes(value domain.Snapshot) error {
 			return fmt.Errorf("run index contains a duplicate code")
 		}
 		expectedRuns[run.Code] = id
+		if run.FormulaID != "" {
+			if _, ok := value.Formulas[run.FormulaID]; !ok {
+				return fmt.Errorf("run %s points at a missing formula revision", id)
+			}
+		}
 	}
 	return compareIndexes("run code", value.RunIndex, expectedRuns)
 }

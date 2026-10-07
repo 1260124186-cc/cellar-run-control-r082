@@ -82,7 +82,9 @@ func statusForCode(code domain.Code) int {
 	case domain.CodeFormulaNotFound, domain.CodeVesselNotFound, domain.CodeRunNotFound:
 		return http.StatusNotFound
 	case domain.CodeFormulaNameConflict, domain.CodeFormulaState,
-		domain.CodeFormulaInUse, domain.CodeVesselConflict,
+		domain.CodeFormulaInUse, domain.CodeFormulaRevisionInvalid,
+		domain.CodeFormulaVersionStale, domain.CodeFormulaRevisionOpen,
+		domain.CodeVesselConflict,
 		domain.CodeVesselUnavailable, domain.CodeVesselState,
 		domain.CodeRunConflict, domain.CodeRunState,
 		domain.CodeObservationConflict:

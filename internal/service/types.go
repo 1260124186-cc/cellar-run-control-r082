@@ -16,6 +16,18 @@ type CreateFormulaInput struct {
 	MaximumDays           int
 }
 
+type StartFormulaRevisionInput struct {
+	ExpectedVersion       *int64
+	Name                  *string
+	Style                 *string
+	TargetOriginalGravity *float64
+	TargetFinalGravity    *float64
+	MaxFermentationTempC  *float64
+	MinimumDays           *int
+	MaximumDays           *int
+	Steps                 *[]domain.FormulaStep
+}
+
 type SetFormulaStepsInput struct {
 	ExpectedVersion *int64
 	Steps           []domain.FormulaStep

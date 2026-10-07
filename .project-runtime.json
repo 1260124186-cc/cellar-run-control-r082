@@ -13,6 +13,10 @@
       "command": "go run ./cmd/fermentctl check formula-approval"
     },
     {
+      "workflow_id": "formula-revision",
+      "command": "go run ./cmd/fermentctl check formula-revision"
+    },
+    {
       "workflow_id": "vessel-run-lifecycle",
       "command": "go run ./cmd/fermentctl check vessel-run-lifecycle"
     },

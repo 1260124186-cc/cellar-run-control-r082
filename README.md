@@ -71,8 +71,21 @@ Formula workflow:
 - `GET /v1/formulas`
 - `GET /v1/formulas/{id}`
 - `PUT /v1/formulas/{id}/steps`
+- `POST /v1/formulas/{id}/revisions`
 - `POST /v1/formulas/{id}/approve`
 - `POST /v1/formulas/{id}/retire`
+
+Creating a formula creates revision 1 of a named formula family. A controlled
+revision is started with `POST /v1/formulas/{id}/revisions` from the family's
+current approved revision. The body is optional; any of `style`,
+`target_original_gravity`, `target_final_gravity`, `max_fermentation_temp_c`,
+`minimum_days`, `maximum_days`, and `steps` supplied overrides the inherited
+value. The candidate is a draft with `revision_of_formula_id` and
+`source_revision_number` lineage fields; it never replaces the current runnable
+version until it is approved. On approval the previous revision is stamped with
+`superseded_at`, stays readable and immutable, and can no longer be revised or
+used for new runs. A run records `formula_family_id`, `formula_revision_number`,
+and `formula_name` so its details trace the exact adopted revision.
 
 Vessel workflow:
 
@@ -94,7 +107,10 @@ Run workflow:
 - `POST /v1/runs/{id}/complete`
 - `POST /v1/runs/{id}/abort`
 
-Writes accept an optional `X-Expected-Version` header. Errors use a stable
+Writes accept an optional `X-Expected-Version` header. Formula revisions carry
+`family_id`, `revision_number`, `revision_of_formula_id`, and
+`source_revision_number`; runs carry `formula_family_id`,
+`formula_revision_number`, and `formula_name`. Errors use a stable
 shape:
 
 ```json
@@ -113,6 +129,7 @@ Run each production workflow check separately:
 
 ```bash
 go run ./cmd/fermentctl check formula-approval
+go run ./cmd/fermentctl check formula-revision
 go run ./cmd/fermentctl check vessel-run-lifecycle
 go run ./cmd/fermentctl check observations-completion
 ```

@@ -8,10 +8,16 @@ import (
 )
 
 type formulaView struct {
-	ID      string               `json:"id"`
-	State   domain.FormulaState  `json:"state"`
-	Version int64                `json:"version"`
-	Steps   []domain.FormulaStep `json:"steps"`
+	ID                   string               `json:"id"`
+	FamilyID             string               `json:"family_id"`
+	RevisionNumber       int                  `json:"revision_number"`
+	RevisionOfID         *string              `json:"revision_of_formula_id"`
+	SourceRevisionNumber *int                 `json:"source_revision_number"`
+	Name                 string               `json:"name"`
+	State                domain.FormulaState  `json:"state"`
+	Version              int64                `json:"version"`
+	Steps                []domain.FormulaStep `json:"steps"`
+	SupersededAt         *time.Time           `json:"superseded_at"`
 }
 
 type vesselView struct {
@@ -22,12 +28,16 @@ type vesselView struct {
 }
 
 type runView struct {
-	ID           string                      `json:"id"`
-	State        domain.RunState             `json:"state"`
-	Version      int64                       `json:"version"`
-	VesselID     *string                     `json:"vessel_id"`
-	Observations []domain.GravityObservation `json:"observations"`
-	Metrics      *domain.RunMetrics          `json:"metrics"`
+	ID                    string                      `json:"id"`
+	State                 domain.RunState             `json:"state"`
+	Version               int64                       `json:"version"`
+	FormulaID             string                      `json:"formula_id"`
+	FormulaFamilyID       string                      `json:"formula_family_id"`
+	FormulaRevisionNumber int                         `json:"formula_revision_number"`
+	FormulaName           string                      `json:"formula_name"`
+	VesselID              *string                     `json:"vessel_id"`
+	Observations          []domain.GravityObservation `json:"observations"`
+	Metrics               *domain.RunMetrics          `json:"metrics"`
 }
 
 type pairView struct {

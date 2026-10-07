@@ -23,6 +23,10 @@ type FormulaStep struct {
 
 type Formula struct {
 	ID                    string        `json:"id"`
+	FamilyID              string        `json:"family_id"`
+	RevisionNumber        int           `json:"revision_number"`
+	RevisionOfID          *string       `json:"revision_of_formula_id,omitempty"`
+	SourceRevisionNumber  *int          `json:"source_revision_number,omitempty"`
 	Name                  string        `json:"name"`
 	Style                 string        `json:"style"`
 	TargetOriginalGravity float64       `json:"target_original_gravity"`
@@ -36,6 +40,7 @@ type Formula struct {
 	CreatedAt             time.Time     `json:"created_at"`
 	UpdatedAt             time.Time     `json:"updated_at"`
 	ApprovedAt            *time.Time    `json:"approved_at,omitempty"`
+	SupersededAt          *time.Time    `json:"superseded_at,omitempty"`
 	RetiredAt             *time.Time    `json:"retired_at,omitempty"`
 }
 
@@ -168,6 +173,166 @@ func (f *Formula) Retire(now time.Time) error {
 	f.UpdatedAt = stamp
 	f.Version++
 	return nil
+}
+
+// MarkSuperseded removes an approved revision from the runnable slot when a
+// newer revision of the same family is published. The revision stays approved,
+// readable, and immutable; it is merely no longer current. Retired revisions
+// are never superseded.
+func (f *Formula) MarkSuperseded(now time.Time) error {
+	if f.State != FormulaApproved {
+		return NewError(CodeFormulaState,
+			"only an approved formula can be superseded")
+	}
+	if f.SupersededAt != nil {
+		return nil
+	}
+	stamp := now.UTC()
+	f.SupersededAt = &stamp
+	f.UpdatedAt = stamp
+	f.Version++
+	return nil
+}
+
+// IsRunnable reports whether the revision is an approved, current formula that
+// new runs can attach to.
+func (f Formula) IsRunnable() bool {
+	return f.State == FormulaApproved && f.SupersededAt == nil
+}
+
+// NewInitialFormula builds the revision 1 draft for a brand new family.
+func NewInitialFormula(
+	id, familyID string,
+	now time.Time,
+	content RevisionContent,
+) (Formula, error) {
+	steps := []FormulaStep{}
+	if content.Steps != nil {
+		steps = append([]FormulaStep(nil), (*content.Steps)...)
+	}
+	formula := Formula{
+		ID:                    id,
+		FamilyID:              familyID,
+		RevisionNumber:        1,
+		Name:                  derefString(content.Name),
+		Style:                 derefString(content.Style),
+		TargetOriginalGravity: derefFloat(content.TargetOriginalGravity),
+		TargetFinalGravity:    derefFloat(content.TargetFinalGravity),
+		MaxFermentationTempC:  derefFloat(content.MaxFermentationTempC),
+		MinimumDays:           derefInt(content.MinimumDays),
+		MaximumDays:           derefInt(content.MaximumDays),
+		Steps:                 steps,
+		State:                 FormulaDraft,
+		Version:               1,
+		CreatedAt:             now.UTC(),
+		UpdatedAt:             now.UTC(),
+	}
+	if err := formula.Validate(); err != nil {
+		return Formula{}, err
+	}
+	return formula, nil
+}
+
+// NewRevisionCandidate builds a controlled revision draft from an approved
+// source revision. The candidate inherits the family, name, and lineage, and
+// either inherits each content field from the source or applies an override.
+// Only an approved revision can serve as the source, and a candidate created
+// from a superseded source is rejected by the caller through the family check.
+func NewRevisionCandidate(
+	id string,
+	revisionNumber int,
+	source Formula,
+	familyID string,
+	content RevisionContent,
+	now time.Time,
+) (Formula, error) {
+	if source.State != FormulaApproved {
+		return Formula{}, NewError(CodeFormulaRevisionInvalid,
+			"a revision can only start from an approved formula revision")
+	}
+	if source.FamilyID != familyID {
+		return Formula{}, NewError(CodeFormulaRevisionInvalid,
+			"the source revision does not belong to the given formula family")
+	}
+
+	steps := append([]FormulaStep(nil), source.Steps...)
+	if content.Steps != nil {
+		steps = append([]FormulaStep(nil), (*content.Steps)...)
+	}
+	name := source.Name
+	if content.Name != nil {
+		name = *content.Name
+	}
+	sourceID := source.ID
+	sourceRevision := source.RevisionNumber
+	candidate := Formula{
+		ID:                    id,
+		FamilyID:              source.FamilyID,
+		RevisionNumber:        revisionNumber,
+		RevisionOfID:          &sourceID,
+		SourceRevisionNumber:  &sourceRevision,
+		Name:                  name,
+		Style:                 chooseString(content.Style, source.Style),
+		TargetOriginalGravity: chooseFloat(content.TargetOriginalGravity, source.TargetOriginalGravity),
+		TargetFinalGravity:    chooseFloat(content.TargetFinalGravity, source.TargetFinalGravity),
+		MaxFermentationTempC:  chooseFloat(content.MaxFermentationTempC, source.MaxFermentationTempC),
+		MinimumDays:           chooseInt(content.MinimumDays, source.MinimumDays),
+		MaximumDays:           chooseInt(content.MaximumDays, source.MaximumDays),
+		Steps:                 steps,
+		State:                 FormulaDraft,
+		Version:               1,
+		CreatedAt:             now.UTC(),
+		UpdatedAt:             now.UTC(),
+	}
+	if err := ValidateFormulaSteps(candidate.Steps, true); err != nil {
+		return Formula{}, err
+	}
+	if err := candidate.Validate(); err != nil {
+		return Formula{}, err
+	}
+	return candidate, nil
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func derefFloat(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func derefInt(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func chooseString(value *string, fallback string) string {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func chooseFloat(value *float64, fallback float64) float64 {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func chooseInt(value *int, fallback int) int {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }
 
 func GravityDifference(original, final float64) float64 {

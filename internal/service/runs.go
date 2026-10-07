@@ -41,14 +41,31 @@ func (s *Service) CreateRun(input CreateRunInput) (domain.FermentationRun, error
 		if !ok {
 			return domain.NewError(domain.CodeFormulaNotFound, "formula was not found")
 		}
-		if formula.State != domain.FormulaApproved {
-			return domain.NewError(domain.CodeFormulaState,
-				"run requires an approved formula")
+		if !formula.IsRunnable() {
+			switch formula.State {
+			case domain.FormulaDraft:
+				return domain.NewError(domain.CodeFormulaState,
+					"run requires an approved formula")
+			case domain.FormulaRetired:
+				return domain.NewError(domain.CodeFormulaState,
+					"run requires an approved formula")
+			default:
+				return domain.NewError(domain.CodeFormulaVersionStale,
+					"run requires the current approved formula version")
+			}
+		}
+		family, ok := snapshot.FormulaFamilies[formula.FamilyID]
+		if !ok || !family.IsCurrent(formula.ID) {
+			return domain.NewError(domain.CodeFormulaVersionStale,
+				"run requires the current approved formula version")
 		}
 		if _, exists := snapshot.RunIndex[run.Code]; exists {
 			return domain.NewError(domain.CodeRunConflict,
 				"a run with the same code already exists")
 		}
+		run.FormulaFamilyID = formula.FamilyID
+		run.FormulaRevisionNumber = formula.RevisionNumber
+		run.FormulaName = formula.Name
 		snapshot.Runs[run.ID] = run.Clone()
 		snapshot.RunIndex[run.Code] = run.ID
 		return nil
