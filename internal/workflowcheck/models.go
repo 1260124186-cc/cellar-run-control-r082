@@ -8,10 +8,16 @@ import (
 )
 
 type formulaView struct {
-	ID      string               `json:"id"`
-	State   domain.FormulaState  `json:"state"`
-	Version int64                `json:"version"`
-	Steps   []domain.FormulaStep `json:"steps"`
+	ID                   string               `json:"id"`
+	LineageID            string               `json:"lineage_id"`
+	Revision             int                  `json:"revision"`
+	State                domain.FormulaState  `json:"state"`
+	Version              int64                `json:"version"`
+	MaxFermentationTempC float64              `json:"max_fermentation_temp_c"`
+	SourceFormulaID      *string              `json:"source_formula_id"`
+	SourceVersion        *int64               `json:"source_version"`
+	SupersededByID       *string              `json:"superseded_by_id"`
+	Steps                []domain.FormulaStep `json:"steps"`
 }
 
 type vesselView struct {
@@ -22,12 +28,14 @@ type vesselView struct {
 }
 
 type runView struct {
-	ID           string                      `json:"id"`
-	State        domain.RunState             `json:"state"`
-	Version      int64                       `json:"version"`
-	VesselID     *string                     `json:"vessel_id"`
-	Observations []domain.GravityObservation `json:"observations"`
-	Metrics      *domain.RunMetrics          `json:"metrics"`
+	ID              string                      `json:"id"`
+	State           domain.RunState             `json:"state"`
+	Version         int64                       `json:"version"`
+	FormulaID       string                      `json:"formula_id"`
+	FormulaRevision int                         `json:"formula_revision"`
+	VesselID        *string                     `json:"vessel_id"`
+	Observations    []domain.GravityObservation `json:"observations"`
+	Metrics         *domain.RunMetrics          `json:"metrics"`
 }
 
 type pairView struct {

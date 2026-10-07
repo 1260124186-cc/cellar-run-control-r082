@@ -78,6 +78,15 @@ func normalizeSnapshot(value domain.Snapshot) (domain.Snapshot, error) {
 	if value.RunIndex == nil {
 		value.RunIndex = map[string]string{}
 	}
+	for id, formula := range value.Formulas {
+		if formula.LineageID == "" {
+			formula.LineageID = id
+		}
+		if formula.Revision < 1 {
+			formula.Revision = 1
+		}
+		value.Formulas[id] = formula
+	}
 	if err := validateIndexes(value); err != nil {
 		return domain.Snapshot{}, err
 	}
@@ -91,10 +100,13 @@ func validateIndexes(value domain.Snapshot) error {
 		if key == "" {
 			return fmt.Errorf("formula %s has an empty normalized name", id)
 		}
-		if existing, found := expectedNames[key]; found && existing != id {
+		if formula.LineageID == "" {
+			return fmt.Errorf("formula %s has an empty lineage", id)
+		}
+		if existing, found := expectedNames[key]; found && existing != formula.LineageID {
 			return fmt.Errorf("formula name index contains a duplicate key")
 		}
-		expectedNames[key] = id
+		expectedNames[key] = formula.LineageID
 	}
 	if err := compareIndexes("formula name", value.NameIndex, expectedNames); err != nil {
 		return err

@@ -24,14 +24,16 @@ deferred to a later engineering task.
 
 ### Formula
 
-A formula contains an identifier, normalized name, style label, target original
-gravity, target final gravity, maximum fermentation temperature, minimum and
-maximum planned days, ordered process steps, lifecycle state, version, and
-timestamps.
+A formula contains an identifier, a lineage identifier, a revision number, a
+normalized name, style label, target original gravity, target final gravity,
+maximum fermentation temperature, minimum and maximum planned days, ordered
+process steps, lifecycle state, version, optional revision-source and
+supersession records, and timestamps.
 
 States are `draft`, `approved`, and `retired`.
 
-- Names are unique after case folding and whitespace normalization.
+- Names are unique across lineages after case folding and whitespace
+  normalization; revisions inside one lineage may share or change the name.
 - Target original gravity is in the inclusive range 1.030 to 1.120.
 - Target final gravity is positive, lower than target original gravity, and
   differs from it by at least 0.005.
@@ -44,6 +46,27 @@ States are `draft`, `approved`, and `retired`.
 - `draft -> approved` requires a complete valid step list.
 - An approved formula is immutable.
 - `approved -> retired` is allowed only when no run currently uses it.
+
+#### Revisions
+
+- The first revision of a formula starts at revision 1 and its lineage
+  identifier is its own identifier.
+- A controlled revision is started from the current approved formula of a
+  lineage: approved and not superseded. Draft, retired, or superseded sources
+  are rejected with `invalid_revision_source`.
+- The candidate copies the source content, accepts optional field overrides,
+  and records the source formula identifier and the source aggregate version.
+- The candidate is an ordinary draft: it can change steps and must be
+  approved before use. It never replaces the current revision while pending.
+- Approving a candidate atomically supersedes its source. The source stays
+  approved and queryable, but it no longer accepts new runs or revisions.
+- Approval rejects a repeated approval (`invalid_formula_state`), a candidate
+  whose recorded source is no longer approved (`invalid_revision_source`),
+  and a candidate whose source was already replaced by another approved
+  revision (`stale_revision_source`). Rejections leave no partial writes.
+- Only the current approved revision of a lineage accepts new runs. A run
+  records the formula identifier and revision number it was created from, so
+  run details always trace to the adopted formula revision.
 
 ### Vessel
 
@@ -63,9 +86,10 @@ States are `available`, `reserved`, `in_use`, `cleaning`, and `retired`.
 
 ### FermentationRun
 
-A run contains an identifier, unique run code, an approved formula identifier,
-an optional vessel identifier, planned volume, notes, lifecycle state,
-timetable, ordered observations, final metrics, version, and timestamps.
+A run contains an identifier, unique run code, an approved formula identifier
+with the adopted formula revision, an optional vessel identifier, planned
+volume, notes, lifecycle state, timetable, ordered observations, final
+metrics, version, and timestamps.
 
 States are `planned`, `reserved`, `fermenting`, `conditioning`, `completed`,
 and `aborted`.
@@ -104,6 +128,7 @@ time, gravity, temperature, optional note, and receipt time.
 Public entry points are:
 
 - `POST /v1/formulas`
+- `POST /v1/formulas/{id}/revisions`
 - `PUT /v1/formulas/{id}/steps`
 - `POST /v1/formulas/{id}/approve`
 - `GET /v1/formulas/{id}`
@@ -111,6 +136,12 @@ Public entry points are:
 The client creates a draft, sets its process step list atomically, approves it,
 and reads the approved record. Invalid ranges, duplicate names, empty steps,
 and repeated approval return stable error codes without partial writes.
+
+The client can also start a controlled revision from the current approved
+formula. The candidate records its source formula and source version, is
+edited and approved like any draft, and supersedes its source only at
+approval. Stale sources, invalid sources, and repeated approval fail without
+partial writes, and superseded revisions stay queryable.
 
 This path crosses HTTP protocol handling, application orchestration, domain
 rules, and snapshot storage.
@@ -210,11 +241,12 @@ task owns systematic tests for validation boundaries, state transitions,
 numeric calculations, stale revisions, storage failures, and concurrent
 reservation attempts.
 
-The current build command is `go build ./...`. Three bounded production checks
+The current build command is `go build ./...`. Four bounded production checks
 start the real HTTP handler, issue real JSON requests, check success and failure
 behavior, and exit without external services:
 
 - `go run ./cmd/fermentctl check formula-approval`
+- `go run ./cmd/fermentctl check formula-revision`
 - `go run ./cmd/fermentctl check vessel-run-lifecycle`
 - `go run ./cmd/fermentctl check observations-completion`
 

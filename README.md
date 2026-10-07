@@ -70,6 +70,7 @@ Formula workflow:
 - `POST /v1/formulas`
 - `GET /v1/formulas`
 - `GET /v1/formulas/{id}`
+- `POST /v1/formulas/{id}/revisions`
 - `PUT /v1/formulas/{id}/steps`
 - `POST /v1/formulas/{id}/approve`
 - `POST /v1/formulas/{id}/retire`
@@ -107,12 +108,38 @@ shape:
 }
 ```
 
+## Formula Revisions
+
+Approved formulas are immutable. To evolve a recipe, start a controlled
+revision from the current approved formula:
+
+```bash
+curl -X POST http://127.0.0.1:8088/v1/formulas/<id>/revisions \
+  -H 'Content-Type: application/json' \
+  -d '{"max_fermentation_temp_c": 24}'
+```
+
+Every field in the request body is optional; omitted fields are copied from
+the source. The candidate is a draft that records `source_formula_id` and
+`source_version`, can be adjusted through `PUT /v1/formulas/{id}/steps`, and
+must be approved before use. While the candidate is pending, the current
+revision keeps accepting runs. Approval atomically supersedes the source:
+the old revision stays queryable but immutable and no longer accepts new
+runs or revisions. Runs created afterwards record the adopted
+`formula_revision` alongside the formula identifier.
+
+Approval rejects a repeated approval (`invalid_formula_state`), a source
+that is no longer approved (`invalid_revision_source`), and a candidate
+whose source was already replaced (`stale_revision_source`), always without
+partial writes.
+
 ## Workflow Checks
 
 Run each production workflow check separately:
 
 ```bash
 go run ./cmd/fermentctl check formula-approval
+go run ./cmd/fermentctl check formula-revision
 go run ./cmd/fermentctl check vessel-run-lifecycle
 go run ./cmd/fermentctl check observations-completion
 ```

@@ -21,6 +21,19 @@ type SetFormulaStepsInput struct {
 	Steps           []domain.FormulaStep
 }
 
+// CreateFormulaRevisionInput carries optional field overrides for a revision
+// candidate. Nil fields keep the value copied from the revision source.
+type CreateFormulaRevisionInput struct {
+	ExpectedVersion       *int64
+	Name                  *string
+	Style                 *string
+	TargetOriginalGravity *float64
+	TargetFinalGravity    *float64
+	MaxFermentationTempC  *float64
+	MinimumDays           *int
+	MaximumDays           *int
+}
+
 type VersionInput struct {
 	ExpectedVersion *int64
 }

@@ -10,6 +10,7 @@ import (
 func (s *Service) CreateFormula(input CreateFormulaInput) (domain.Formula, error) {
 	now := s.clock.Now()
 	formula := domain.Formula{
+		Revision:              1,
 		Name:                  input.Name,
 		Style:                 input.Style,
 		TargetOriginalGravity: input.TargetOriginalGravity,
@@ -32,6 +33,7 @@ func (s *Service) CreateFormula(input CreateFormulaInput) (domain.Formula, error
 		return domain.Formula{}, domain.NewError(domain.CodeStorage, err.Error())
 	}
 	formula.ID = id
+	formula.LineageID = id
 	nameKey := domain.NameKey(formula.Name)
 
 	err = s.store.Execute(func(snapshot *domain.Snapshot) error {
@@ -40,13 +42,81 @@ func (s *Service) CreateFormula(input CreateFormulaInput) (domain.Formula, error
 				"a formula with the same normalized name already exists")
 		}
 		snapshot.Formulas[formula.ID] = formula
-		snapshot.NameIndex[nameKey] = formula.ID
+		snapshot.NameIndex[nameKey] = formula.LineageID
 		return nil
 	})
 	if err != nil {
 		return domain.Formula{}, err
 	}
 	return formula.Clone(), nil
+}
+
+func (s *Service) CreateFormulaRevision(
+	id string,
+	input CreateFormulaRevisionInput,
+) (domain.Formula, error) {
+	candidateID, err := generateEntityID("formula")
+	if err != nil {
+		return domain.Formula{}, domain.NewError(domain.CodeStorage, err.Error())
+	}
+	var created domain.Formula
+	err = s.store.Execute(func(snapshot *domain.Snapshot) error {
+		source, ok := snapshot.Formulas[id]
+		if !ok {
+			return domain.NewError(domain.CodeFormulaNotFound, "formula was not found")
+		}
+		if err := s.checkExpected(source.Version, input.ExpectedVersion); err != nil {
+			return err
+		}
+		candidate, err := source.BeginRevision(s.clock.Now())
+		if err != nil {
+			return err
+		}
+		candidate.ID = candidateID
+		applyRevisionOverrides(&candidate, input)
+		candidate.Normalize()
+		if err := candidate.Validate(); err != nil {
+			return err
+		}
+		nameKey := domain.NameKey(candidate.Name)
+		if existing, exists := snapshot.NameIndex[nameKey]; exists &&
+			existing != candidate.LineageID {
+			return domain.NewError(domain.CodeFormulaNameConflict,
+				"a formula with the same normalized name already exists")
+		}
+		snapshot.Formulas[candidate.ID] = candidate
+		snapshot.NameIndex[nameKey] = candidate.LineageID
+		created = candidate.Clone()
+		return nil
+	})
+	if err != nil {
+		return domain.Formula{}, err
+	}
+	return created, nil
+}
+
+func applyRevisionOverrides(candidate *domain.Formula, input CreateFormulaRevisionInput) {
+	if input.Name != nil {
+		candidate.Name = *input.Name
+	}
+	if input.Style != nil {
+		candidate.Style = *input.Style
+	}
+	if input.TargetOriginalGravity != nil {
+		candidate.TargetOriginalGravity = *input.TargetOriginalGravity
+	}
+	if input.TargetFinalGravity != nil {
+		candidate.TargetFinalGravity = *input.TargetFinalGravity
+	}
+	if input.MaxFermentationTempC != nil {
+		candidate.MaxFermentationTempC = *input.MaxFermentationTempC
+	}
+	if input.MinimumDays != nil {
+		candidate.MinimumDays = *input.MinimumDays
+	}
+	if input.MaximumDays != nil {
+		candidate.MaximumDays = *input.MaximumDays
+	}
 }
 
 func (s *Service) SetFormulaSteps(
@@ -86,8 +156,32 @@ func (s *Service) ApproveFormula(id string, input VersionInput) (domain.Formula,
 		if err := s.checkExpected(formula.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
-		if err := formula.Approve(s.clock.Now()); err != nil {
+		if formula.State != domain.FormulaDraft {
+			return domain.NewError(domain.CodeFormulaState,
+				"only a draft formula can be approved")
+		}
+		now := s.clock.Now()
+		var source domain.Formula
+		if formula.SourceFormulaID != nil {
+			var found bool
+			source, found = snapshot.Formulas[*formula.SourceFormulaID]
+			if !found || source.State != domain.FormulaApproved {
+				return domain.NewError(domain.CodeFormulaRevisionSource,
+					"the recorded revision source is no longer an approved formula")
+			}
+			if source.SupersededByID != nil {
+				return domain.NewError(domain.CodeFormulaRevisionStale,
+					"the revision source was already replaced by another approved revision")
+			}
+		}
+		if err := formula.Approve(now); err != nil {
 			return err
+		}
+		if formula.SourceFormulaID != nil {
+			if err := source.MarkSuperseded(formula.ID, now); err != nil {
+				return err
+			}
+			snapshot.Formulas[source.ID] = source
 		}
 		snapshot.Formulas[id] = formula
 		updated = formula.Clone()

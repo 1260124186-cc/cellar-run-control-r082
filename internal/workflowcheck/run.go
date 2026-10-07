@@ -32,6 +32,10 @@ func Run(name string) error {
 		if err := formulaApproval(api); err != nil {
 			return err
 		}
+	case "formula-revision":
+		if err := formulaRevision(api); err != nil {
+			return err
+		}
 	case "vessel-run-lifecycle":
 		if err := vesselRunLifecycle(api); err != nil {
 			return err
